@@ -1,18 +1,23 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"golang.org/x/crypto/bcrypt"
-	"gopkg.in/go-oauth2/mongo.v3"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
-	_ "database/sql"
+	"golang.org/x/crypto/bcrypt"
+	mongo "gopkg.in/go-oauth2/mongo.v3"
+
 	_ "github.com/lib/pq"
 
 	"github.com/go-session/session"
@@ -24,25 +29,25 @@ import (
 )
 
 type User struct {
-	Email string `json:"email"`
-	Password string `json:"password"`
+	Email     string `json:"email"`
+	Password  string `json:"password"`
 	FirstName string `json:"first_name"`
-	LastName string `json:"last_name"`
+	LastName  string `json:"last_name"`
 }
 
 type UserMini struct {
-	ID int `json:"id"`
-	Email string `json:"email"`
+	ID        int    `json:"id"`
+	Email     string `json:"email"`
 	FirstName string `json:"first_name"`
-	LastName string `json:"last_name"`
+	LastName  string `json:"last_name"`
 }
 
 type UserMax struct {
-	ID int `json:"id"`
-	Email string `json:"email"`
-	Password string `json:"password"`
+	ID        int    `json:"id"`
+	Email     string `json:"email"`
+	Password  string `json:"password"`
 	FirstName string `json:"first_name"`
-	LastName string `json:"last_name"`
+	LastName  string `json:"last_name"`
 }
 
 type Response struct {
@@ -54,8 +59,35 @@ type ErrorResponse struct {
 }
 
 type UsersList struct {
-	Count int `json:"count"`
-	Data []UserMini `json:"data"`
+	Count int        `json:"count"`
+	Data  []UserMini `json:"data"`
+}
+
+type GetUser struct {
+	Count int      `json:"count"`
+	Data  UserMini `json:"data"`
+}
+
+// Write gzipped data to a Writer
+func gzipWrite(w http.ResponseWriter, data []byte) []byte {
+	w.Header().Add("Accept-Charset", "utf-8")
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Encoding", "gzip")
+	var b bytes.Buffer
+	gz, err := gzip.NewWriterLevel(w, gzip.BestSpeed)
+	if err != nil {
+		errorResponse(w, err.Error())
+	}
+	if _, err := gz.Write(data); err != nil {
+		errorResponse(w, err.Error())
+	}
+	if err := gz.Flush(); err != nil {
+		errorResponse(w, err.Error())
+	}
+	if err := gz.Close(); err != nil {
+		errorResponse(w, err.Error())
+	}
+	return []byte(b.String())
 }
 
 func main() {
@@ -89,20 +121,23 @@ func main() {
 	srv := server.NewServer(server.NewConfig(), manager)
 	srv.SetUserAuthorizationHandler(userAuthorizeHandler)
 
-	srv.SetInternalErrorHandler(func (err error) (re *errors.Response) {
+	srv.SetInternalErrorHandler(func(err error) (re *errors.Response) {
 		log.Println("Internal Error:", err.Error())
 		return
 	})
 
-	srv.SetResponseErrorHandler(func (re *errors.Response) {
+	srv.SetResponseErrorHandler(func(re *errors.Response) {
 		log.Println("Response Error:", re.Error.Error())
 	})
 
+	//http.Handle("/assets/", http.FileServer(http.Dir("static/assets/")))
+	http.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir("static/assets"))))
+
 	http.HandleFunc("/login", loginHandler)
-	http.HandleFunc("/users", usersHandler)
+	http.HandleFunc("/users/", usersHandler)
 	http.HandleFunc("/auth", authHandler)
 
-	http.HandleFunc("/authorize", func (w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
 		store, err := session.Start(nil, w, r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -124,14 +159,14 @@ func main() {
 		}
 	})
 
-	http.HandleFunc("/token", func (w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
 		err := srv.HandleTokenRequest(w, r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	})
 
-	http.HandleFunc("/test", func (w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/test", func(w http.ResponseWriter, r *http.Request) {
 		token, err := srv.ValidationBearerToken(r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -146,6 +181,47 @@ func main() {
 		e := json.NewEncoder(w)
 		e.SetIndent("", "  ")
 		e.Encode(data)
+	})
+
+	http.HandleFunc("/token-info", func(w http.ResponseWriter, r *http.Request) {
+		token, err := srv.ValidationBearerToken(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		connectionString := "user=postgres password=1369s1r3d69 dbname=oauth sslmode=disable"
+		db, err := sql.Open("postgres", connectionString)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		hexString := hex.EncodeToString([]byte(token.GetUserID()))
+
+		userId, err := strconv.ParseInt(hexString, 16, 0)
+		if err != nil {
+			errorResponse(w, err.Error())
+			return
+		}
+
+		user := UserMini{}
+		err = db.QueryRow(fmt.Sprintf("SELECT id, email, first_name, last_name FROM users WHERE id = %v", userId)).Scan(&user.ID, &user.Email, &user.FirstName, &user.LastName)
+		if err != nil {
+			errorResponse(w, err.Error())
+		}
+
+		data := map[string]interface{}{
+			"expires_in": int64(token.GetAccessCreateAt().Add(token.GetAccessExpiresIn()).Sub(time.Now()).Seconds()),
+			"client_id":  token.GetClientID(),
+			"user_id":    userId,
+			"email":      user.Email,
+			"first_name": user.FirstName,
+			"last_name":  user.LastName,
+		}
+
+		jsonResponse, _ := json.Marshal(data)
+
+		w.Write(gzipWrite(w, jsonResponse))
 	})
 
 	log.Println("Server is running at 9096 port.")
@@ -275,36 +351,49 @@ func comparePasswords(hashedPwd string, plainPwd []byte) bool {
 func usersHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
+		id := strings.TrimPrefix(r.URL.Path, "/users/")
 		connectionString := "user=postgres password=1369s1r3d69 dbname=oauth sslmode=disable"
 		db, err := sql.Open("postgres", connectionString)
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		rows, err := db.Query("SELECT * FROM users")
-		if err != nil {
-			errorResponse(w, err.Error())
-		}
-		defer rows.Close()
-
-		usersList := make([]UserMini, 0)
-		var password string
-		for rows.Next() {
-			user := UserMini{}
-			err := rows.Scan(&user.ID, &user.Email, &password, &user.FirstName, &user.LastName)
+		if id == "" {
+			rows, err := db.Query("SELECT * FROM users")
 			if err != nil {
 				errorResponse(w, err.Error())
-				return
 			}
-			usersList = append(usersList, user)
+			defer rows.Close()
+
+			usersList := make([]UserMini, 0)
+			var password string
+			for rows.Next() {
+				user := UserMini{}
+				err := rows.Scan(&user.ID, &user.Email, &password, &user.FirstName, &user.LastName)
+				if err != nil {
+					errorResponse(w, err.Error())
+					return
+				}
+				usersList = append(usersList, user)
+			}
+			fmt.Println(usersList)
+
+			usersResponse := UsersList{len(usersList), usersList}
+
+			jsonResponse, _ := json.Marshal(usersResponse)
+			w.Write(gzipWrite(w, jsonResponse))
+		} else {
+			user := UserMini{}
+			err := db.QueryRow(fmt.Sprintf("SELECT id, email, first_name, last_name FROM users WHERE id = %s", id)).Scan(&user.ID, &user.Email, &user.FirstName, &user.LastName)
+			if err != nil {
+				errorResponse(w, err.Error())
+			}
+
+			userResponse := GetUser{Count: 1, Data: user}
+
+			jsonResponse, _ := json.Marshal(userResponse)
+			w.Write(gzipWrite(w, jsonResponse))
 		}
-		fmt.Println(usersList)
-
-		usersResponse := UsersList{len(usersList), usersList}
-
-		jsonResponse, _ := json.Marshal(usersResponse)
-		w.Header().Set("Content-type", "application/json")
-		w.Write(jsonResponse)
 		break
 	case "POST":
 		connectionString := "user=postgres password=1369s1r3d69 dbname=oauth sslmode=disable"
@@ -340,8 +429,7 @@ func usersHandler(w http.ResponseWriter, r *http.Request) {
 		response := Response{}
 		response.Data = map[string]int{"id": id}
 		jsonResponse, _ := json.Marshal(response)
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(jsonResponse)
+		w.Write(gzipWrite(w, jsonResponse))
 	}
 }
 
