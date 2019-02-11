@@ -289,7 +289,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	outputHTML(w, r, "static/login.html")
+	outputHTML(w, r, "templates/login.html")
 }
 
 func authHandler(w http.ResponseWriter, r *http.Request) {
@@ -305,7 +305,7 @@ func authHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	outputHTML(w, r, "static/auth.html")
+	outputHTML(w, r, "templates/auth.html")
 }
 
 func outputHTML(w http.ResponseWriter, req *http.Request, filename string) {
