@@ -19,6 +19,7 @@ import (
 	mongo "gopkg.in/go-oauth2/mongo.v3"
 
 	_ "github.com/lib/pq"
+	"github.com/thedevsaddam/renderer"
 
 	"github.com/go-session/session"
 	"gopkg.in/oauth2.v3/errors"
@@ -88,6 +89,16 @@ func gzipWrite(w http.ResponseWriter, data []byte) []byte {
 		errorResponse(w, err.Error())
 	}
 	return []byte(b.String())
+}
+
+var rnd *renderer.Render
+
+func init() {
+	opts := renderer.Options{
+		ParseGlobPattern: "./templates/*.html",
+	}
+
+	rnd = renderer.New(opts)
 }
 
 func main() {
@@ -289,7 +300,8 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	outputHTML(w, r, "templates/login.html")
+	// outputHTML(w, r, "templates/login.html")
+	rnd.HTML(w, http.StatusOK, "login", nil)
 }
 
 func authHandler(w http.ResponseWriter, r *http.Request) {
@@ -305,7 +317,8 @@ func authHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	outputHTML(w, r, "templates/auth.html")
+	// outputHTML(w, r, "templates/auth.html")
+	rnd.HTML(w, http.StatusOK, "auth", nil)
 }
 
 func outputHTML(w http.ResponseWriter, req *http.Request, filename string) {
